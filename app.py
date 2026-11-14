@@ -12,17 +12,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import uvicorn
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
 
+from clip_finder import find_clips
 from style_extractor import PROFILE_FIELDS, extract_style, validate_profile
+from transcriber import probe_duration_seconds, transcribe
 
 ROOT = Path(__file__).resolve().parent
 UPLOAD_DIR = ROOT / "uploads"
 DB_PATH = ROOT / "viral_clip_studio.sqlite3"
 TEMPLATE_PATH = ROOT / "templates" / "index.html"
 STYLE_DIR = ROOT / "styles"
+load_dotenv(ROOT / ".env")
 VIDEO_EXTENSIONS = {".mp4", ".mov"}
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024 * 1024  # 8 GiB per file
 CHUNK_SIZE = 1024 * 1024
@@ -38,7 +42,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Viral Clip Studio", version="0.1.0-phase1", lifespan=lifespan)
+app = FastAPI(title="Viral Clip Studio", version="0.2.0-phase2", lifespan=lifespan)
 
 
 def ffmpeg_status() -> dict[str, str | bool]:
@@ -79,7 +83,7 @@ def index() -> HTMLResponse:
 
 @app.get("/health")
 def health() -> JSONResponse:
-    return JSONResponse({"status": "ok", "phase": 1, "ffmpeg": ffmpeg_status()})
+    return JSONResponse({"status": "ok", "phase": 2, "ffmpeg": ffmpeg_status()})
 
 
 async def save_upload(file: UploadFile, role: str) -> dict[str, str | int]:
@@ -123,8 +127,37 @@ async def upload_videos(
     """Phase 0: accept and persist source files; processing is not implemented yet."""
     primary = await save_upload(long_video, "long video")
     reference = await save_upload(reference_video, "reference video") if reference_video else None
-    return {"message": "Upload saved. Clip finding and editing are planned for later phases.",
+    return {"message": "Upload saved. Use the Phase 2 clip finder to transcribe and score the long video.",
             "long_video": primary, "reference_video": reference}
+
+
+@app.post("/clips/find")
+async def analyze_long_video(long_video: UploadFile = File(...)) -> dict[str, object]:
+    """Transcribe a 10-minute to 2-hour source locally and return top clip candidates."""
+    saved = await save_upload(long_video, "clip finder source")
+    video_path = UPLOAD_DIR / f"{saved['id']}{Path(saved['filename']).suffix.lower()}"
+    try:
+        duration = await run_in_threadpool(probe_duration_seconds, video_path)
+    except (FileNotFoundError, RuntimeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if duration < 600 or duration > 7200:
+        raise HTTPException(status_code=422, detail="Source video must be between 10 minutes and 2 hours.")
+    try:
+        transcript = await run_in_threadpool(transcribe, video_path, "base")
+        result = find_clips(transcript)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "video": {"id": saved["id"], "filename": saved["filename"],
+                  "duration_seconds": round(duration, 3)},
+        "transcription": transcript,
+        "candidate_count": result["candidate_count"],
+        "scoring_mode": result["scoring_mode"],
+        "clips": result["clips"],
+        "message": "Transcript and clip candidates are ready. Whisper ran locally; transcript wording is preserved from Whisper.",
+    }
 
 
 @app.post("/styles/analyze")

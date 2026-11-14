@@ -19,6 +19,13 @@ Local-first video clipping app, built one verified phase at a time.
 
 The style analyzer needs the actual reel video file. A social profile URL by itself is not downloaded in Phase 1. A rasterized video cannot reveal the source font file, and a mixed audio track cannot reliably separate music from speech; those fields are estimates for review. OCR requires the optional system `tesseract` command. Zoom estimation tracks sampled image features with OpenCV, with a coarse pixel-scale fallback if OpenCV is absent; treat the result as an estimate.
 
+### Phase 2 — local transcript and clip candidates
+
+- Whisper `base` runs locally and returns a full transcript plus word-level timestamps; language detection is automatic for Hindi, Hinglish, English, and other Whisper-supported languages.
+- 30–60 second transcript windows are scored on hook (30), emotion (30), complete idea (20), and loop potential (20). The UI shows the top non-overlapping clips, their exact Whisper text, score breakdown, and an editable full transcript.
+- If `GEMINI_API_KEY` is set in `.env`, Gemini scores candidate batches. If the key is absent, the request fails, or the quota is reached, rule-based scores are used and the app continues.
+- Phase 2 accepts source videos between 10 minutes and 2 hours. On first use, Whisper may need to download its model weights; transcription afterward runs locally.
+
 ## Run
 
 ```bash
@@ -38,6 +45,7 @@ FFmpeg/ffprobe must be installed separately and available on `PATH`. Tesseract i
 - `POST /styles/save` — JSON profile with exactly 15 fields
 - `GET /styles` — list approved profiles
 - `GET /styles/{slug}` — read one approved profile
+- `POST /clips/find` — accepts `long_video` MP4/MOV and returns local Whisper transcript, word timestamps, and up to 8 scored moments
 
 ## Local data
 
@@ -47,10 +55,9 @@ FFmpeg/ffprobe must be installed separately and available on `PATH`. Tesseract i
 
 ## Not implemented yet
 
-- Phase 2: local Whisper transcript and candidate clip scoring
 - Phase 3: 9:16 clip rendering and editable text exports
 - Phase 4: end-to-end workflow, history, and test-clip approval
 - Phase 5: download/share conveniences
-- Phase 6: GitHub publication and live hosting
+- Phase 6: live hosting
 
-No paid API is used by Phases 0–1.
+No paid API is used. Gemini is optional and falls back to local rule-based scoring.
