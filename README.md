@@ -26,6 +26,14 @@ The style analyzer needs the actual reel video file. A social profile URL by its
 - If `GEMINI_API_KEY` is set in `.env`, Gemini scores candidate batches. If the key is absent, the request fails, or the quota is reached, rule-based scores are used and the app continues.
 - Phase 2 accepts source videos between 10 minutes and 2 hours. On first use, Whisper may need to download its model weights; transcription afterward runs locally.
 
+### Phase 3 — single approved clip render
+
+- Render one candidate at a time after choosing a saved Style Profile. The editor creates a 1080×1920, 30 fps H.264/CRF 18/yuv420p MP4; source audio is set to -3 dB.
+- OpenCV samples frontal faces to choose a stable 9:16 crop center. When no face is detected, it uses a centered crop. The style zoom estimate is applied as a 10–15% punch (12% when the profile has no usable estimate), and profile contrast/saturation/brightness drive FFmpeg color grading.
+- FFmpeg removes detected internal pauses longer than roughly half a second while preserving short handles. Word timestamps are shifted along with the removed pauses, then burned word-by-word into the video. The first two seconds can show the selected hook.
+- Each render provides MP4, SRT, verbatim transcript, title, caption, and hashtags as separate downloads. No music is added by default; this avoids bundling unlicensed music. Source audio is a mixed track, so this phase cannot independently lower an embedded music bed while preserving speech.
+- This phase is a one-at-a-time render path. Phase 4 will add the enforced test-clip approval and batch workflow.
+
 ## Run
 
 ```bash
@@ -46,16 +54,19 @@ FFmpeg/ffprobe must be installed separately and available on `PATH`. Tesseract i
 - `GET /styles` — list approved profiles
 - `GET /styles/{slug}` — read one approved profile
 - `POST /clips/find` — accepts `long_video` MP4/MOV and returns local Whisper transcript, word timestamps, and up to 8 scored moments
+- `POST /music/upload` — accepts a user-provided licensed music bed (`MP3`, `WAV`, `M4A`, `AAC`, `OGG`, `FLAC`); no music is bundled
+- `POST /clips/render` — JSON: `source_id`, `start_seconds`, `end_seconds`, `word_timestamps`, `style_slug`, and `hook_line`; renders one clip using an approved profile
+- `GET /outputs/{render_id}/{filename}` — downloads one of the six files produced by that render
 
 ## Local data
 
 - Uploaded files: `uploads/`
+- Rendered clips and companion files: `outputs/`
 - Approved styles: `styles/`
 - SQLite metadata: `viral_clip_studio.sqlite3`
 
 ## Not implemented yet
 
-- Phase 3: 9:16 clip rendering and editable text exports
 - Phase 4: end-to-end workflow, history, and test-clip approval
 - Phase 5: download/share conveniences
 - Phase 6: live hosting

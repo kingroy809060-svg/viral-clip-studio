@@ -1,4 +1,4 @@
-"""Viral Clip Studio — Phase 0 upload intake and Phase 1 style profiles."""
+"""Viral Clip Studio — upload intake, style profiles, clip finder, and Phase 3 editor."""
 from __future__ import annotations
 
 import os
@@ -14,15 +14,18 @@ from pathlib import Path
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from clip_finder import find_clips
+from editor import render_clip
 from style_extractor import PROFILE_FIELDS, extract_style, validate_profile
 from transcriber import probe_duration_seconds, transcribe
 
 ROOT = Path(__file__).resolve().parent
 UPLOAD_DIR = ROOT / "uploads"
+OUTPUT_DIR = ROOT / "outputs"
 DB_PATH = ROOT / "viral_clip_studio.sqlite3"
 TEMPLATE_PATH = ROOT / "templates" / "index.html"
 STYLE_DIR = ROOT / "styles"
@@ -42,7 +45,17 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Viral Clip Studio", version="0.2.0-phase2", lifespan=lifespan)
+app = FastAPI(title="Viral Clip Studio", version="0.3.0-phase3", lifespan=lifespan)
+
+
+class RenderRequest(BaseModel):
+    source_id: str = Field(min_length=8, max_length=64)
+    start_seconds: float = Field(ge=0)
+    end_seconds: float = Field(gt=0)
+    word_timestamps: list[dict[str, object]] = Field(default_factory=list)
+    style_slug: str = Field(min_length=1, max_length=100)
+    hook_line: str = Field(default="", max_length=500)
+    music_upload_id: str | None = Field(default=None, max_length=64)
 
 
 def ffmpeg_status() -> dict[str, str | bool]:
@@ -61,6 +74,7 @@ def ffmpeg_status() -> dict[str, str | bool]:
 
 def init_db() -> None:
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     STYLE_DIR.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(DB_PATH)) as conn:
         conn.execute("""CREATE TABLE IF NOT EXISTS uploads (
@@ -69,6 +83,13 @@ def init_db() -> None:
             original_name TEXT NOT NULL,
             stored_path TEXT NOT NULL,
             size_bytes INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS rendered_clips (
+            id TEXT PRIMARY KEY,
+            source_id TEXT NOT NULL,
+            output_dir TEXT NOT NULL,
+            files_json TEXT NOT NULL,
             created_at TEXT NOT NULL
         )""")
         conn.commit()
@@ -83,7 +104,7 @@ def index() -> HTMLResponse:
 
 @app.get("/health")
 def health() -> JSONResponse:
-    return JSONResponse({"status": "ok", "phase": 2, "ffmpeg": ffmpeg_status()})
+    return JSONResponse({"status": "ok", "phase": 3, "ffmpeg": ffmpeg_status()})
 
 
 async def save_upload(file: UploadFile, role: str) -> dict[str, str | int]:
@@ -112,6 +133,38 @@ async def save_upload(file: UploadFile, role: str) -> dict[str, str | int]:
             )
             conn.commit()
         return {"id": upload_id, "role": role, "filename": original_name, "size_bytes": size}
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    finally:
+        await file.close()
+
+
+async def save_audio_upload(file: UploadFile) -> dict[str, str | int]:
+    original_name = Path(file.filename or "music").name
+    suffix = Path(original_name).suffix.lower()
+    if suffix not in {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}:
+        raise HTTPException(status_code=415, detail="Music: upload MP3, WAV, M4A, AAC, OGG, or FLAC.")
+    upload_id = uuid.uuid4().hex
+    destination = UPLOAD_DIR / f"{upload_id}{suffix}"
+    size = 0
+    try:
+        with destination.open("wb") as target:
+            while chunk := await file.read(CHUNK_SIZE):
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="Music file exceeds 8 GiB limit.")
+                target.write(chunk)
+        if size == 0:
+            raise HTTPException(status_code=400, detail="Music upload is empty.")
+        with closing(sqlite3.connect(DB_PATH)) as conn:
+            conn.execute(
+                "INSERT INTO uploads VALUES (?, ?, ?, ?, ?, ?)",
+                (upload_id, "royalty-free music", original_name, str(destination.relative_to(ROOT)), size,
+                 datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+        return {"id": upload_id, "filename": original_name, "size_bytes": size}
     except Exception:
         destination.unlink(missing_ok=True)
         raise
@@ -158,6 +211,92 @@ async def analyze_long_video(long_video: UploadFile = File(...)) -> dict[str, ob
         "clips": result["clips"],
         "message": "Transcript and clip candidates are ready. Whisper ran locally; transcript wording is preserved from Whisper.",
     }
+
+
+@app.post("/music/upload")
+async def upload_licensed_music(music_file: UploadFile = File(...)) -> dict[str, object]:
+    """Save a user-provided licensed music bed; the app does not bundle music."""
+    return {"message": "Music saved. Use only music you have rights to use.",
+            "music": await save_audio_upload(music_file)}
+
+
+@app.post("/clips/render")
+async def render_approved_clip(request: RenderRequest) -> dict[str, object]:
+    """Render one user-approved Phase 2 candidate using an approved saved style."""
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        source_row = conn.execute(
+            "SELECT stored_path FROM uploads WHERE id = ? AND role = ?",
+            (request.source_id, "clip finder source"),
+        ).fetchone()
+    if not source_row:
+        raise HTTPException(status_code=404, detail="Source upload was not found. Run the clip finder first.")
+    source_path = ROOT / source_row[0]
+    if not source_path.is_file():
+        raise HTTPException(status_code=404, detail="Source video file is missing. Upload it again.")
+    if request.end_seconds - request.start_seconds < 30 or request.end_seconds - request.start_seconds > 60:
+        raise HTTPException(status_code=422, detail="Approved clips must be between 30 and 60 seconds.")
+    safe_slug = re.sub(r"[^a-z0-9-]", "", request.style_slug.lower())
+    profile_path = STYLE_DIR / f"{safe_slug}.json"
+    if not safe_slug or not profile_path.is_file():
+        raise HTTPException(status_code=404, detail="Choose a saved and approved Style Profile first.")
+    try:
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="Saved Style Profile JSON is invalid.") from exc
+    music_path = None
+    if request.music_upload_id:
+        with closing(sqlite3.connect(DB_PATH)) as conn:
+            music_row = conn.execute(
+                "SELECT stored_path FROM uploads WHERE id = ? AND role = ?",
+                (request.music_upload_id, "royalty-free music"),
+            ).fetchone()
+        if not music_row:
+            raise HTTPException(status_code=404, detail="Uploaded licensed music file was not found.")
+        music_path = ROOT / music_row[0]
+    output_dir = OUTPUT_DIR / request.source_id
+    try:
+        rendered = await run_in_threadpool(
+            render_clip, source_path, output_dir, request.start_seconds, request.end_seconds,
+            request.word_timestamps, profile, request.hook_line, music_path,
+        )
+    except (RuntimeError, FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    rendered["style_name"] = profile.get("style_name", safe_slug)
+    rendered["files"] = {
+        key: f"/outputs/{rendered['id']}/{filename}"
+        for key, filename in rendered.items()
+        if key in {"mp4", "srt", "transcript", "title", "caption", "hashtags"}
+    }
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        conn.execute(
+            "INSERT INTO rendered_clips VALUES (?, ?, ?, ?, ?)",
+            (rendered["id"], request.source_id,
+             str((output_dir / rendered["mp4"]).parent.relative_to(ROOT)),
+             json.dumps(rendered, ensure_ascii=False), datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+    return {"message": "Approved test clip rendered. Review it before generating more clips.", "clip": rendered}
+
+
+@app.get("/outputs/{render_id}/{filename}")
+def download_rendered_file(render_id: str, filename: str) -> FileResponse:
+    """Serve only the six named assets created for a known render id."""
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        row = conn.execute("SELECT output_dir, files_json FROM rendered_clips WHERE id = ?", (render_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Rendered clip was not found.")
+    try:
+        metadata = json.loads(row[1])
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="Rendered clip metadata is invalid.") from exc
+    allowed_names = {metadata.get(key) for key in ("mp4", "srt", "transcript", "title", "caption", "hashtags")}
+    if filename not in allowed_names:
+        raise HTTPException(status_code=404, detail="This file is not part of the rendered clip.")
+    path = (ROOT / row[0] / filename).resolve()
+    if not path.is_relative_to(OUTPUT_DIR.resolve()) or not path.is_file():
+        raise HTTPException(status_code=404, detail="Rendered file is missing.")
+    media_type = "video/mp4" if path.suffix == ".mp4" else "text/plain; charset=utf-8"
+    return FileResponse(path, media_type=media_type, filename=path.name)
 
 
 @app.post("/styles/analyze")
