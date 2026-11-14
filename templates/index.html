@@ -3,15 +3,32 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Viral Clip Studio — Phase 1</title>
+  <title>Viral Clip Studio — Phase 2</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>body{background:#09090b;color:#f4f4f5}.drop{border:1px dashed #52525b}input,textarea,select{color:#f4f4f5}</style>
 </head>
 <body class="min-h-screen">
   <main class="mx-auto max-w-5xl px-5 py-10">
-    <p class="text-sm font-semibold uppercase tracking-[.2em] text-violet-400">Phase 1 · Style extractor</p>
+    <p class="text-sm font-semibold uppercase tracking-[.2em] text-violet-400">Phase 2 · Clip finder</p>
     <h1 class="mt-3 text-4xl font-bold">Viral Clip Studio</h1>
-    <p class="mt-3 max-w-2xl text-zinc-400">Upload a reference reel video. The app measures visual and audio traits, then lets you edit and approve a reusable Style Profile.</p>
+      <p class="mt-3 max-w-2xl text-zinc-400">Phase 1 extracts a reusable editing Style Profile from an uploaded reel. Phase 2 transcribes a long video locally and ranks the strongest clip moments.</p>
+
+    <section class="mt-8 rounded-2xl border border-violet-900/70 bg-violet-950/20 p-6">
+      <p class="text-xs font-semibold uppercase tracking-[.2em] text-violet-300">Phase 2 · Whisper transcript + viral scoring</p>
+      <h2 class="mt-2 text-2xl font-bold">Find the strongest moments</h2>
+      <p class="mt-2 max-w-3xl text-sm leading-6 text-zinc-400">Whisper base transcribes locally with word timestamps. The app scores 30–60 second moments for hook, emotion, complete idea, and replay potential. Gemini is optional; without a key or if a request fails, rule-based scoring is used.</p>
+      <form id="clip-form" class="mt-5 grid gap-4 rounded-xl border border-zinc-800 bg-zinc-950/70 p-4 sm:grid-cols-[1fr_auto] sm:items-end">
+        <label><span class="mb-2 block text-sm font-medium">Long video (10 minutes–2 hours, MP4/MOV)</span><input class="drop w-full rounded-lg bg-zinc-950 p-3 text-sm" type="file" name="long_video" accept="video/mp4,video/quicktime,.mp4,.mov" required></label>
+        <button class="rounded-xl bg-violet-600 px-5 py-3 font-semibold hover:bg-violet-500 disabled:opacity-50" type="submit">Transcribe &amp; find clips</button>
+        <p class="sm:col-span-2 text-xs text-zinc-500">First Whisper use may download the free base model. After that, transcription runs locally. Keep this tab open while a long video is processed.</p>
+      </form>
+      <p id="clip-status" class="mt-4 hidden rounded-xl border border-zinc-800 p-4 text-sm"></p>
+      <section id="clip-results" class="mt-5 hidden space-y-5">
+        <div><h3 class="text-xl font-semibold">Top clip candidates</h3><p id="clip-summary" class="mt-1 text-xs text-zinc-500"></p></div>
+        <div id="clip-list" class="grid gap-3"></div>
+        <label class="block"><span class="mb-2 block text-sm font-medium">Editable full transcript (Whisper output)</span><textarea id="full-transcript" rows="10" class="w-full rounded-xl border border-zinc-700 bg-zinc-950 p-4 text-sm leading-6" spellcheck="false"></textarea></label>
+      </section>
+    </section>
 
     <form id="analyze-form" class="mt-8 grid gap-5 rounded-2xl border border-zinc-800 bg-zinc-900/70 p-6 md:grid-cols-[1fr_1.5fr_auto] md:items-end">
       <label class="block"><span class="mb-2 block font-medium">Style name</span><input class="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3" name="style_name" value="Global Baatien Style" required></label>
@@ -36,7 +53,7 @@
 
     <section class="mt-6 rounded-2xl border border-zinc-800 p-6 text-sm text-zinc-400">
       <h2 class="font-semibold text-white">Phase 0 upload intake</h2>
-      <p class="mt-2">Long-video upload storage remains available. Clip discovery and video rendering are not part of this phase.</p>
+      <p class="mt-2">This storage form is retained for manual upload checks. Use the Phase 2 form above to transcribe a long source and discover clip candidates.</p>
       <form id="upload-form" class="mt-4 grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
         <label><span class="mb-2 block">Long video (MP4/MOV)</span><input class="drop w-full rounded-lg bg-zinc-950 p-3 text-xs" type="file" name="long_video" accept="video/mp4,video/quicktime,.mp4,.mov" required></label>
         <label><span class="mb-2 block">Reference file (optional)</span><input class="drop w-full rounded-lg bg-zinc-950 p-3 text-xs" type="file" name="reference_video" accept="video/mp4,video/quicktime,.mp4,.mov"></label>
@@ -54,6 +71,13 @@ function showStatus(message,error=false){statusBox.textContent=message;statusBox
 function renderProfile(profile){activeProfile=profile;fieldsBox.replaceChildren();for(const key of Object.keys(labels)){const label=document.createElement('label');label.className='block';const title=document.createElement('span');title.className='mb-2 block text-sm text-zinc-300';title.textContent=labels[key];label.append(title);let input;if(key==='caption_position'){input=document.createElement('select');for(const option of ['top','center','bottom']){const opt=document.createElement('option');opt.value=option;opt.textContent=option;input.append(opt);}}else if(['hook_text','end_cta','caption_font_family','caption_background','caption_font_color'].includes(key)){input=document.createElement('textarea');input.rows=key.includes('text')?3:2;}else{input=document.createElement('input');input.type=key==='style_name'?'text':'number';input.step='0.1';if(['caption_font_size_pct','zoom_intensity_pct','contrast','saturation','brightness'].includes(key)){input.min='0';input.max='100';}}
 input.className='w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm';input.value=profile[key]??'';input.addEventListener('input',()=>{activeProfile[key]=input.type==='number'?Number(input.value):input.value;});label.append(input);fieldsBox.append(label);}profileCard.classList.remove('hidden');profileCard.scrollIntoView({behavior:'smooth',block:'start'});}
 analyzeForm.addEventListener('submit',async e=>{e.preventDefault();const b=analyzeForm.querySelector('button');b.disabled=true;b.textContent='Analyzing…';showStatus('Reading video metadata, sampling frames, detecting cuts and scanning visible text. This can take a little while.');profileCard.classList.add('hidden');try{const res=await fetch('/styles/analyze',{method:'POST',body:new FormData(analyzeForm)});const data=await res.json();if(!res.ok)throw Error(data.detail||'Style analysis failed.');renderProfile(data.profile);showStatus(data.message);}catch(err){showStatus(String(err),true);}finally{b.disabled=false;b.textContent='Analyze style';}});
+const clipForm=document.querySelector('#clip-form'), clipStatus=document.querySelector('#clip-status'), clipResults=document.querySelector('#clip-results');
+function showClipStatus(message,error=false){clipStatus.textContent=message;clipStatus.className='mt-4 rounded-xl border p-4 text-sm '+(error?'border-red-900 bg-red-950/40 text-red-200':'border-zinc-800 bg-zinc-900 text-zinc-300');}
+function timeLabel(seconds){const total=Math.max(0,Math.floor(seconds));return `${String(Math.floor(total/60)).padStart(2,'0')}:${String(total%60).padStart(2,'0')}`;}
+function renderClips(data){const list=document.querySelector('#clip-list');list.replaceChildren();document.querySelector('#clip-summary').textContent=`${data.candidate_count} windows scored · ${data.scoring_mode} · ${data.clips.length} selected`;
+ for(const [index,clip] of data.clips.entries()){const card=document.createElement('article');card.className='rounded-xl border border-zinc-800 bg-zinc-950/70 p-4';const top=document.createElement('div');top.className='flex flex-wrap items-center justify-between gap-2';const heading=document.createElement('h4');heading.className='font-semibold';heading.textContent=`Clip ${index+1} · ${timeLabel(clip.start_seconds)}–${timeLabel(clip.end_seconds)} (${Math.round(clip.duration_seconds)}s)`;const score=document.createElement('span');score.className='rounded-full bg-violet-900/60 px-3 py-1 text-sm font-bold text-violet-200';score.textContent=`${clip.score}/100`;top.append(heading,score);const hook=document.createElement('p');hook.className='mt-3 text-sm font-semibold text-amber-200';hook.textContent=`Hook: ${clip.hook_line}`;const parts=document.createElement('p');parts.className='mt-2 text-xs text-zinc-500';parts.textContent=`Hook ${clip.score_parts.hook}/30 · Emotion ${clip.score_parts.emotion}/30 · Complete idea ${clip.score_parts.complete_idea}/20 · Loop ${clip.score_parts.loop}/20 · ${clip.scoring_source}`;const transcript=document.createElement('p');transcript.className='mt-3 whitespace-pre-wrap text-sm leading-6 text-zinc-300';transcript.textContent=clip.transcript;card.append(top,hook,parts,transcript);list.append(card);}
+ document.querySelector('#full-transcript').value=data.transcription.text||'';clipResults.classList.remove('hidden');clipResults.scrollIntoView({behavior:'smooth',block:'start'});}
+clipForm.addEventListener('submit',async e=>{e.preventDefault();const button=clipForm.querySelector('button');button.disabled=true;button.textContent='Transcribing…';clipResults.classList.add('hidden');showClipStatus('Loading Whisper base locally and transcribing the video. Long videos can take several minutes.');try{const response=await fetch('/clips/find',{method:'POST',body:new FormData(clipForm)});const data=await response.json();if(!response.ok)throw Error(data.detail||'Clip analysis failed.');renderClips(data);showClipStatus(data.message);}catch(error){showClipStatus(String(error),true);}finally{button.disabled=false;button.textContent='Transcribe & find clips';}});
 document.querySelector('#save-style').addEventListener('click',async()=>{if(!activeProfile)return;const b=document.querySelector('#save-style');b.disabled=true;b.textContent='Saving…';try{const res=await fetch('/styles/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(activeProfile)});const data=await res.json();if(!res.ok)throw Error(data.detail||'Could not save profile.');showStatus(`Approved profile saved to ${data.path}`);await refreshStyles();}catch(err){showStatus(String(err),true);}finally{b.disabled=false;b.innerHTML='Approve &amp; save';}});
 async function refreshStyles(){try{const res=await fetch('/styles');const rows=await res.json();const list=document.querySelector('#style-list');list.replaceChildren();if(!rows.length){const li=document.createElement('li');li.className='text-zinc-500';li.textContent='No saved profiles yet.';list.append(li);return;}for(const profile of rows){const li=document.createElement('li');li.className='rounded-lg bg-zinc-950 px-4 py-3';li.textContent=`${profile.style_name} · ${profile.cut_speed_cuts_per_minute} cuts/min · captions ${profile.caption_position}`;list.append(li);}}catch(_){}}
 document.querySelector('#refresh-styles').addEventListener('click',refreshStyles);refreshStyles();
