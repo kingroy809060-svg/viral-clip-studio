@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Viral Clip Studio — Phase 1</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>body{background:#09090b;color:#f4f4f5}.drop{border:1px dashed #52525b}input,textarea,select{color:#f4f4f5}</style>
+</head>
+<body class="min-h-screen">
+  <main class="mx-auto max-w-5xl px-5 py-10">
+    <p class="text-sm font-semibold uppercase tracking-[.2em] text-violet-400">Phase 1 · Style extractor</p>
+    <h1 class="mt-3 text-4xl font-bold">Viral Clip Studio</h1>
+    <p class="mt-3 max-w-2xl text-zinc-400">Upload a reference reel video. The app measures visual and audio traits, then lets you edit and approve a reusable Style Profile.</p>
+
+    <form id="analyze-form" class="mt-8 grid gap-5 rounded-2xl border border-zinc-800 bg-zinc-900/70 p-6 md:grid-cols-[1fr_1.5fr_auto] md:items-end">
+      <label class="block"><span class="mb-2 block font-medium">Style name</span><input class="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-3" name="style_name" value="Global Baatien Style" required></label>
+      <label class="block"><span class="mb-2 block font-medium">Reference reel file <span class="text-zinc-500">(MP4/MOV)</span></span><input class="drop block w-full rounded-xl bg-zinc-950 p-3 text-sm" type="file" name="reference_video" accept="video/mp4,video/quicktime,.mp4,.mov" required></label>
+      <button class="rounded-xl bg-violet-600 px-5 py-3 font-semibold hover:bg-violet-500 disabled:opacity-50" type="submit">Analyze style</button>
+      <p class="md:col-span-3 text-xs leading-5 text-zinc-500">A profile URL is not a video file. For this phase, provide the actual reference reel video. OCR, font, and audio estimates can be imperfect; review them before saving.</p>
+    </form>
+    <p id="status" class="mt-4 hidden rounded-xl border border-zinc-800 p-4 text-sm"></p>
+
+    <section id="profile-card" class="mt-6 hidden rounded-2xl border border-zinc-800 bg-zinc-900/70 p-6">
+      <div class="flex flex-wrap items-start justify-between gap-4">
+        <div><p class="text-xs font-semibold uppercase tracking-widest text-emerald-400">Review before saving</p><h2 class="mt-2 text-2xl font-bold">Style Profile</h2></div>
+        <button id="save-style" class="rounded-xl bg-emerald-600 px-5 py-3 font-semibold hover:bg-emerald-500">Approve &amp; save</button>
+      </div>
+      <div id="fields" class="mt-6 grid gap-4 sm:grid-cols-2"></div>
+    </section>
+
+    <section class="mt-8 rounded-2xl border border-zinc-800 p-6">
+      <div class="flex items-center justify-between gap-3"><h2 class="text-xl font-semibold">Saved Style Library</h2><button id="refresh-styles" class="text-sm text-violet-300 underline">Refresh</button></div>
+      <ul id="style-list" class="mt-4 space-y-2 text-sm text-zinc-300"></ul>
+    </section>
+
+    <section class="mt-6 rounded-2xl border border-zinc-800 p-6 text-sm text-zinc-400">
+      <h2 class="font-semibold text-white">Phase 0 upload intake</h2>
+      <p class="mt-2">Long-video upload storage remains available. Clip discovery and video rendering are not part of this phase.</p>
+      <form id="upload-form" class="mt-4 grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+        <label><span class="mb-2 block">Long video (MP4/MOV)</span><input class="drop w-full rounded-lg bg-zinc-950 p-3 text-xs" type="file" name="long_video" accept="video/mp4,video/quicktime,.mp4,.mov" required></label>
+        <label><span class="mb-2 block">Reference file (optional)</span><input class="drop w-full rounded-lg bg-zinc-950 p-3 text-xs" type="file" name="reference_video" accept="video/mp4,video/quicktime,.mp4,.mov"></label>
+        <button class="rounded-lg bg-zinc-700 px-4 py-3 font-medium hover:bg-zinc-600" type="submit">Save uploads</button>
+      </form>
+      <pre id="upload-result" class="mt-3 hidden whitespace-pre-wrap rounded-lg bg-black p-3 text-xs"></pre>
+      <a class="mt-4 inline-block text-violet-300 underline" href="/health">App health</a>
+    </section>
+  </main>
+<script>
+const analyzeForm=document.querySelector('#analyze-form'), statusBox=document.querySelector('#status'), profileCard=document.querySelector('#profile-card'), fieldsBox=document.querySelector('#fields');
+let activeProfile=null;
+const labels={style_name:'Style name',reference_duration_seconds:'Reference duration (seconds)',caption_font_family:'Caption font (estimated)',caption_font_size_pct:'Caption text height (% of frame)',caption_font_color:'Caption color',caption_position:'Caption position',caption_background:'Caption background',cut_speed_cuts_per_minute:'Cuts per minute',zoom_intensity_pct:'Zoom intensity estimate (%)',contrast:'Contrast (0–100)',saturation:'Saturation (0–100)',brightness:'Brightness (0–100)',music_volume_db:'Audio bed level estimate (dB)',hook_text:'Opening hook text (OCR)',end_cta:'Ending CTA text (OCR)'};
+function showStatus(message,error=false){statusBox.textContent=message;statusBox.classList.remove('hidden');statusBox.className='mt-4 rounded-xl border p-4 text-sm '+(error?'border-red-900 bg-red-950/40 text-red-200':'border-zinc-800 bg-zinc-900 text-zinc-300');}
+function renderProfile(profile){activeProfile=profile;fieldsBox.replaceChildren();for(const key of Object.keys(labels)){const label=document.createElement('label');label.className='block';const title=document.createElement('span');title.className='mb-2 block text-sm text-zinc-300';title.textContent=labels[key];label.append(title);let input;if(key==='caption_position'){input=document.createElement('select');for(const option of ['top','center','bottom']){const opt=document.createElement('option');opt.value=option;opt.textContent=option;input.append(opt);}}else if(['hook_text','end_cta','caption_font_family','caption_background','caption_font_color'].includes(key)){input=document.createElement('textarea');input.rows=key.includes('text')?3:2;}else{input=document.createElement('input');input.type=key==='style_name'?'text':'number';input.step='0.1';if(['caption_font_size_pct','zoom_intensity_pct','contrast','saturation','brightness'].includes(key)){input.min='0';input.max='100';}}
+input.className='w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm';input.value=profile[key]??'';input.addEventListener('input',()=>{activeProfile[key]=input.type==='number'?Number(input.value):input.value;});label.append(input);fieldsBox.append(label);}profileCard.classList.remove('hidden');profileCard.scrollIntoView({behavior:'smooth',block:'start'});}
+analyzeForm.addEventListener('submit',async e=>{e.preventDefault();const b=analyzeForm.querySelector('button');b.disabled=true;b.textContent='Analyzing…';showStatus('Reading video metadata, sampling frames, detecting cuts and scanning visible text. This can take a little while.');profileCard.classList.add('hidden');try{const res=await fetch('/styles/analyze',{method:'POST',body:new FormData(analyzeForm)});const data=await res.json();if(!res.ok)throw Error(data.detail||'Style analysis failed.');renderProfile(data.profile);showStatus(data.message);}catch(err){showStatus(String(err),true);}finally{b.disabled=false;b.textContent='Analyze style';}});
+document.querySelector('#save-style').addEventListener('click',async()=>{if(!activeProfile)return;const b=document.querySelector('#save-style');b.disabled=true;b.textContent='Saving…';try{const res=await fetch('/styles/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(activeProfile)});const data=await res.json();if(!res.ok)throw Error(data.detail||'Could not save profile.');showStatus(`Approved profile saved to ${data.path}`);await refreshStyles();}catch(err){showStatus(String(err),true);}finally{b.disabled=false;b.innerHTML='Approve &amp; save';}});
+async function refreshStyles(){try{const res=await fetch('/styles');const rows=await res.json();const list=document.querySelector('#style-list');list.replaceChildren();if(!rows.length){const li=document.createElement('li');li.className='text-zinc-500';li.textContent='No saved profiles yet.';list.append(li);return;}for(const profile of rows){const li=document.createElement('li');li.className='rounded-lg bg-zinc-950 px-4 py-3';li.textContent=`${profile.style_name} · ${profile.cut_speed_cuts_per_minute} cuts/min · captions ${profile.caption_position}`;list.append(li);}}catch(_){}}
+document.querySelector('#refresh-styles').addEventListener('click',refreshStyles);refreshStyles();
+document.querySelector('#upload-form').addEventListener('submit',async e=>{e.preventDefault();const out=document.querySelector('#upload-result');try{const res=await fetch('/upload',{method:'POST',body:new FormData(e.currentTarget)});const data=await res.json();out.textContent=JSON.stringify(data,null,2);out.classList.remove('hidden');}catch(err){out.textContent=String(err);out.classList.remove('hidden');}});
+</script>
+</body>
+</html>
