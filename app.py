@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -128,7 +128,10 @@ async def upload_videos(
 
 
 @app.post("/styles/analyze")
-async def analyze_style(reference_video: UploadFile = File(...), style_name: str = "Global Baatien Style") -> dict[str, object]:
+async def analyze_style(
+    reference_video: UploadFile = File(...),
+    style_name: str = Form(default="Global Baatien Style"),
+) -> dict[str, object]:
     """Analyze a user-provided local reference video and return an editable profile."""
     saved = await save_upload(reference_video, "style reference video")
     # save_upload names stored files with the generated upload id and original extension.
