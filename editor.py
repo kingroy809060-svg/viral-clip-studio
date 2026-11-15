@@ -243,8 +243,9 @@ def render_clip(
     output_duration = sum(right - left for left, right in ranges)
     center_x, center_y = _face_center(source, media["width"], media["height"], start, end)
     source_w, source_h = media["width"], media["height"]
+    slow_zoom = bool(style_profile.get("slow_zoom"))
     zoom_pct = float(style_profile.get("zoom_intensity_pct", 0) or 0)
-    zoom = 1 + (min(15.0, max(10.0, zoom_pct if zoom_pct > 0 else 12.0)) / 100.0)
+    zoom = 1.0 if slow_zoom else 1 + (min(15.0, max(10.0, zoom_pct if zoom_pct > 0 else 12.0)) / 100.0)
     if source_w / source_h > 9 / 16:
         crop_h = min(source_h, source_w * 16 / 9) / zoom
         crop_w = crop_h * 9 / 16
@@ -265,9 +266,15 @@ def render_clip(
     ass_filter = f"ass='{filt_path(ass_path)}'"
     chain: list[str] = []
     for index, (left, right) in enumerate(ranges):
+        crop_filter = f"crop={crop_w:.3f}:{crop_h:.3f}:{crop_x:.3f}:{crop_y:.3f}"
+        scale_filter = (
+            "zoompan=z='min(zoom+0.00018\\,1.12)':d=1:"
+            "x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':s=1080x1920:fps=30"
+            if slow_zoom else "scale=1080:1920:flags=lanczos"
+        )
         chain.append(
             f"[0:v]trim=start={start + left:.4f}:end={start + right:.4f},setpts=PTS-STARTPTS,"
-            f"crop={crop_w:.3f}:{crop_h:.3f}:{crop_x:.3f}:{crop_y:.3f},scale=1080:1920:flags=lanczos,"
+            f"{crop_filter},{scale_filter},"
             f"eq=contrast={contrast:.4f}:brightness={brightness:.4f}:saturation={saturation:.4f},fps=30,setsar=1[{index}v]"
         )
         if media["has_audio"]:

@@ -1,4 +1,4 @@
-"""Viral Clip Studio — upload intake, style profiles, clip finder, and Phase 3 editor."""
+"""Viral Clip Studio — intake, style profiles, clip finder, and test-first batch editor."""
 from __future__ import annotations
 
 import os
@@ -7,13 +7,14 @@ import re
 import shutil
 import sqlite3
 import uuid
+import copy
 from contextlib import asynccontextmanager, closing
 from datetime import datetime, timezone
 from pathlib import Path
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
@@ -45,7 +46,9 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Viral Clip Studio", version="0.3.0-phase3", lifespan=lifespan)
+app = FastAPI(title="Viral Clip Studio", version="0.4.0-phase4", lifespan=lifespan)
+
+VIDEO_TYPES = {"Podcast", "Talking Head", "Vlog", "Tutorial", "Motivational"}
 
 
 class RenderRequest(BaseModel):
@@ -56,6 +59,7 @@ class RenderRequest(BaseModel):
     style_slug: str = Field(min_length=1, max_length=100)
     hook_line: str = Field(default="", max_length=500)
     music_upload_id: str | None = Field(default=None, max_length=64)
+    video_type: str | None = Field(default=None, max_length=40)
 
 
 def ffmpeg_status() -> dict[str, str | bool]:
@@ -92,6 +96,13 @@ def init_db() -> None:
             files_json TEXT NOT NULL,
             created_at TEXT NOT NULL
         )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS batches (
+            id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""")
         conn.commit()
 
 
@@ -104,7 +115,7 @@ def index() -> HTMLResponse:
 
 @app.get("/health")
 def health() -> JSONResponse:
-    return JSONResponse({"status": "ok", "phase": 3, "ffmpeg": ffmpeg_status()})
+    return JSONResponse({"status": "ok", "phase": 4, "ffmpeg": ffmpeg_status()})
 
 
 async def save_upload(file: UploadFile, role: str) -> dict[str, str | int]:
@@ -177,10 +188,10 @@ async def upload_videos(
     long_video: UploadFile = File(...),
     reference_video: UploadFile | None = File(default=None),
 ) -> dict[str, object]:
-    """Phase 0: accept and persist source files; processing is not implemented yet."""
+    """Phase 0 upload intake retained for direct/manual file checks."""
     primary = await save_upload(long_video, "long video")
     reference = await save_upload(reference_video, "reference video") if reference_video else None
-    return {"message": "Upload saved. Use the Phase 2 clip finder to transcribe and score the long video.",
+    return {"message": "Upload saved. Use the Phase 4 batch workflow to analyze and edit the video.",
             "long_video": primary, "reference_video": reference}
 
 
@@ -243,6 +254,10 @@ async def render_approved_clip(request: RenderRequest) -> dict[str, object]:
         profile = json.loads(profile_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="Saved Style Profile JSON is invalid.") from exc
+    if request.video_type:
+        if request.video_type not in VIDEO_TYPES:
+            raise HTTPException(status_code=422, detail="Video type is not supported.")
+        profile = _profile_for_video_type(profile, request.video_type)
     music_path = None
     if request.music_upload_id:
         with closing(sqlite3.connect(DB_PATH)) as conn:
@@ -262,6 +277,7 @@ async def render_approved_clip(request: RenderRequest) -> dict[str, object]:
     except (RuntimeError, FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     rendered["style_name"] = profile.get("style_name", safe_slug)
+    rendered["video_type"] = request.video_type
     rendered["files"] = {
         key: f"/outputs/{rendered['id']}/{filename}"
         for key, filename in rendered.items()
@@ -276,6 +292,290 @@ async def render_approved_clip(request: RenderRequest) -> dict[str, object]:
         )
         conn.commit()
     return {"message": "Approved test clip rendered. Review it before generating more clips.", "clip": rendered}
+
+
+def _profile_for_video_type(profile: dict[str, object], video_type: str) -> dict[str, object]:
+    """Apply the Phase 4 edit preset while preserving the approved base style."""
+    adapted = copy.deepcopy(profile)
+    adapted["video_type"] = video_type
+    if video_type == "Podcast":
+        adapted["zoom_intensity_pct"] = 10
+        adapted["speaker_tracking"] = True
+    elif video_type == "Talking Head":
+        adapted["zoom_intensity_pct"] = 15
+    elif video_type == "Vlog":
+        adapted["zoom_intensity_pct"] = 12
+        adapted["preserve_scene_changes"] = True
+    elif video_type == "Tutorial":
+        adapted["caption_position"] = "top"
+    elif video_type == "Motivational":
+        adapted["zoom_intensity_pct"] = 0
+        adapted["slow_zoom"] = True
+    return adapted
+
+
+def _detect_video_type(video_path: Path, transcript_text: str) -> tuple[str, float, str]:
+    """Rule-based type estimate from transcript cues and sampled scene/face evidence."""
+    text = transcript_text.lower()
+    patterns = [
+        ("Tutorial", ("tutorial", "step by step", "click on", "screen recording", "कैसे", "क्लिक करें", "पहला step")),
+        ("Motivational", ("motivation", "never give up", "believe in yourself", "your dream", "हिम्मत", "मेहनत", "हार मत", "सपना")),
+        ("Podcast", ("podcast", "interview", "our guest", "episode", "पॉडकास्ट", "इंटरव्यू")),
+        ("Vlog", ("vlog", "day in my life", "travel with me", "let's go", "आज हम", "घूमने")),
+    ]
+    for video_type, cues in patterns:
+        if any(cue in text for cue in cues):
+            return video_type, 0.78, "transcript keyword cues"
+
+    face_hits = scene_changes = samples = 0
+    try:
+        import cv2
+
+        capture = cv2.VideoCapture(str(video_path))
+        detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        previous = None
+        duration = probe_duration_seconds(video_path)
+        for fraction in (0.05, 0.2, 0.35, 0.5, 0.65, 0.8, 0.95):
+            capture.set(cv2.CAP_PROP_POS_MSEC, duration * fraction * 1000)
+            ok, frame = capture.read()
+            if not ok:
+                continue
+            samples += 1
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            if len(detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(48, 48))):
+                face_hits += 1
+            thumb = cv2.resize(gray, (96, 54))
+            if previous is not None and float(cv2.absdiff(thumb, previous).mean()) > 28:
+                scene_changes += 1
+            previous = thumb
+        capture.release()
+    except Exception:
+        samples = 0
+    if samples:
+        face_ratio = face_hits / samples
+        change_ratio = scene_changes / max(1, samples - 1)
+        if face_ratio >= 0.72 and change_ratio < 0.45:
+            return "Talking Head", 0.62, "stable sampled face framing"
+        if change_ratio >= 0.45:
+            return "Vlog", 0.58, "high sampled scene change rate"
+        if face_ratio > 0:
+            return "Podcast", 0.52, "sampled speaker face detected"
+    return "Talking Head", 0.35, "default guess; review the detected type"
+
+
+def _load_batch(batch_id: str) -> dict[str, object] | None:
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        row = conn.execute("SELECT payload_json FROM batches WHERE id = ?", (batch_id,)).fetchone()
+    if not row:
+        return None
+    try:
+        return json.loads(row[0])
+    except json.JSONDecodeError:
+        return None
+
+
+def _save_batch(batch: dict[str, object]) -> None:
+    batch["updated_at"] = datetime.now(timezone.utc).isoformat()
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        conn.execute("UPDATE batches SET status = ?, payload_json = ?, updated_at = ? WHERE id = ?",
+                     (batch["status"], json.dumps(batch, ensure_ascii=False), batch["updated_at"], batch["id"]))
+        conn.commit()
+
+
+def _candidate_from_ref(batch: dict[str, object], candidate_ref: str) -> tuple[dict[str, object], dict[str, object]]:
+    match = re.fullmatch(r"(\d+):(\d+)", candidate_ref)
+    if not match:
+        raise HTTPException(status_code=422, detail="Candidate reference is invalid.")
+    source_index, clip_index = map(int, match.groups())
+    sources = batch.get("sources", [])
+    if source_index >= len(sources) or clip_index >= len(sources[source_index].get("clips", [])):
+        raise HTTPException(status_code=404, detail="Clip candidate was not found in this batch.")
+    return sources[source_index], sources[source_index]["clips"][clip_index]
+
+
+@app.post("/batches")
+async def create_batch(
+    background: list[UploadFile] = File(...),
+    style_slug: str = Form(default="global-baatien-style"),
+    video_type: str = Form(default="auto"),
+    music_upload_id: str | None = Form(default=None),
+) -> dict[str, object]:
+    """Analyze one to four long videos and create a test-first batch."""
+    if not 1 <= len(background) <= 4:
+        raise HTTPException(status_code=422, detail="Upload between one and four long videos per batch.")
+    safe_slug = re.sub(r"[^a-z0-9-]", "", style_slug.lower())
+    style_path = STYLE_DIR / f"{safe_slug}.json"
+    if not safe_slug or not style_path.is_file():
+        raise HTTPException(status_code=404, detail="Choose a saved and approved Style Profile.")
+    if video_type != "auto" and video_type not in VIDEO_TYPES:
+        raise HTTPException(status_code=422, detail="Select Auto or one of the five supported video types.")
+    if music_upload_id:
+        with closing(sqlite3.connect(DB_PATH)) as conn:
+            music_row = conn.execute("SELECT 1 FROM uploads WHERE id = ? AND role = ?",
+                                     (music_upload_id, "royalty-free music")).fetchone()
+        if not music_row:
+            raise HTTPException(status_code=404, detail="Uploaded licensed music file was not found.")
+
+    batch_id = uuid.uuid4().hex[:16]
+    now = datetime.now(timezone.utc).isoformat()
+    batch: dict[str, object] = {
+        "id": batch_id, "status": "analyzing", "style_slug": safe_slug,
+        "style_name": json.loads(style_path.read_text(encoding="utf-8")).get("style_name", safe_slug),
+        "requested_video_type": video_type, "sources": [], "test_candidate_ref": None,
+        "music_upload_id": music_upload_id,
+        "test_clip": None, "progress": {"completed": 0, "total": 0}, "results": [], "errors": [],
+        "created_at": now, "updated_at": now,
+    }
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        conn.execute("INSERT INTO batches VALUES (?, ?, ?, ?, ?)",
+                     (batch_id, "analyzing", json.dumps(batch, ensure_ascii=False), now, now))
+        conn.commit()
+
+    for file in background:
+        try:
+            saved = await save_upload(file, "clip finder source")
+            source_path = UPLOAD_DIR / f"{saved['id']}{Path(saved['filename']).suffix.lower()}"
+            duration = await run_in_threadpool(probe_duration_seconds, source_path)
+            if duration < 600 or duration > 7200:
+                raise ValueError(f"{saved['filename']}: video must be between 10 minutes and 2 hours.")
+            transcript = await run_in_threadpool(transcribe, source_path, "base")
+            picks = find_clips(transcript)
+            if video_type == "auto":
+                detected_type, confidence, type_reason = await run_in_threadpool(
+                    _detect_video_type, source_path, str(transcript.get("text", "")))
+            else:
+                detected_type, confidence, type_reason = video_type, 1.0, "user selected"
+            batch["sources"].append({
+                "source_id": saved["id"], "filename": saved["filename"],
+                "duration_seconds": round(duration, 3), "language": transcript.get("language", "unknown"),
+                "video_type": detected_type, "type_confidence": confidence, "type_reason": type_reason,
+                "candidate_count": picks["candidate_count"], "scoring_mode": picks["scoring_mode"],
+                "clips": picks["clips"],
+            })
+        except (HTTPException, RuntimeError, ValueError, OSError) as exc:
+            batch["errors"].append({"filename": file.filename or "video", "error": str(exc)})
+
+    if not batch["sources"]:
+        batch["status"] = "failed"
+        _save_batch(batch)
+        raise HTTPException(status_code=422, detail={"message": "No uploaded video could be analyzed.", "errors": batch["errors"]})
+    batch["status"] = "analysis_ready"
+    _save_batch(batch)
+    return {"message": "Candidates are ready. Render one test clip and approve it before batch export.", "batch": batch}
+
+
+@app.get("/batches/{batch_id}")
+def get_batch(batch_id: str) -> dict[str, object]:
+    batch = _load_batch(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch was not found.")
+    return batch
+
+
+@app.post("/batches/{batch_id}/test")
+async def render_batch_test(batch_id: str, candidate_ref: str = Form(...)) -> dict[str, object]:
+    batch = _load_batch(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch was not found.")
+    if batch["status"] not in {"analysis_ready", "test_ready"}:
+        raise HTTPException(status_code=409, detail="A test clip can only be rendered before batch approval.")
+    source, candidate = _candidate_from_ref(batch, candidate_ref)
+    request = RenderRequest(
+        source_id=source["source_id"], start_seconds=candidate["start_seconds"],
+        end_seconds=candidate["end_seconds"], word_timestamps=candidate["word_timestamps"],
+        style_slug=batch["style_slug"], hook_line=candidate["hook_line"], video_type=source["video_type"],
+        music_upload_id=batch.get("music_upload_id"),
+    )
+    rendered = await render_approved_clip(request)
+    batch["status"] = "test_ready"
+    batch["test_candidate_ref"] = candidate_ref
+    batch["test_clip"] = rendered["clip"]
+    _save_batch(batch)
+    return {"message": "Test export is ready. Approve this exact test to unlock remaining clips.",
+            "batch": batch, "test_clip": rendered["clip"]}
+
+
+@app.post("/batches/{batch_id}/approve")
+def approve_batch_test(batch_id: str) -> dict[str, object]:
+    batch = _load_batch(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch was not found.")
+    if batch["status"] != "test_ready" or not batch.get("test_clip"):
+        raise HTTPException(status_code=409, detail="Render and review one test clip before approving the batch.")
+    batch["status"] = "approved"
+    batch["approved_at"] = datetime.now(timezone.utc).isoformat()
+    _save_batch(batch)
+    return {"message": "Test approved. Remaining clips can now be generated.", "batch": batch}
+
+
+async def _generate_remaining(batch_id: str) -> None:
+    batch = _load_batch(batch_id)
+    if not batch or batch["status"] != "generating":
+        return
+    remaining = [(source_index, clip_index) for source_index, source in enumerate(batch["sources"])
+                 for clip_index, _ in enumerate(source["clips"])
+                 if f"{source_index}:{clip_index}" != batch.get("test_candidate_ref")]
+    progress = {"completed": 0, "total": len(remaining)}
+    batch["progress"] = progress
+    batch["results"] = []
+    batch["errors"] = batch.get("errors", [])
+    _save_batch(batch)
+    for source_index, clip_index in remaining:
+        source, candidate = _candidate_from_ref(batch, f"{source_index}:{clip_index}")
+        try:
+            rendered = await render_approved_clip(RenderRequest(
+                source_id=source["source_id"], start_seconds=candidate["start_seconds"],
+                end_seconds=candidate["end_seconds"], word_timestamps=candidate["word_timestamps"],
+                style_slug=batch["style_slug"], hook_line=candidate["hook_line"], video_type=source["video_type"],
+                music_upload_id=batch.get("music_upload_id"),
+            ))
+            batch["results"].append({"source": source["filename"], "candidate_ref": f"{source_index}:{clip_index}",
+                                     "score": candidate["score"], "clip": rendered["clip"]})
+        except Exception as exc:
+            batch["errors"].append({"candidate_ref": f"{source_index}:{clip_index}", "error": str(exc)[:500]})
+        progress["completed"] += 1
+        batch["progress"] = progress
+        _save_batch(batch)
+    batch["status"] = "partial" if batch["errors"] else "complete"
+    _save_batch(batch)
+
+
+@app.post("/batches/{batch_id}/generate")
+async def generate_batch(batch_id: str, background_tasks: BackgroundTasks) -> dict[str, object]:
+    batch = _load_batch(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch was not found.")
+    if batch["status"] != "approved":
+        raise HTTPException(status_code=409, detail="Approve the test clip before generating remaining clips.")
+    batch["status"] = "generating"
+    batch["progress"] = {"completed": 0, "total": sum(len(source["clips"]) for source in batch["sources"]) - 1}
+    _save_batch(batch)
+    background_tasks.add_task(_generate_remaining, batch_id)
+    return {"message": "Remaining clips queued.", "batch": batch}
+
+
+@app.get("/batches")
+def list_batches() -> list[dict[str, object]]:
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        rows = conn.execute("SELECT payload_json FROM batches ORDER BY created_at DESC LIMIT 50").fetchall()
+    return [json.loads(row[0]) for row in rows]
+
+
+@app.get("/clips/history")
+def clip_history() -> list[dict[str, object]]:
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        rows = conn.execute("""SELECT r.id, r.source_id, u.original_name, r.files_json, r.created_at
+            FROM rendered_clips r LEFT JOIN uploads u ON u.id = r.source_id
+            ORDER BY r.created_at DESC LIMIT 100""").fetchall()
+    history = []
+    for render_id, source_id, source_name, encoded, created_at in rows:
+        try:
+            item = json.loads(encoded)
+            item.update({"source_id": source_id, "source_filename": source_name, "created_at": created_at})
+            history.append(item)
+        except json.JSONDecodeError:
+            continue
+    return history
 
 
 @app.get("/outputs/{render_id}/{filename}")

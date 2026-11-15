@@ -32,7 +32,14 @@ The style analyzer needs the actual reel video file. A social profile URL by its
 - OpenCV samples frontal faces to choose a stable 9:16 crop center. When no face is detected, it uses a centered crop. The style zoom estimate is applied as a 10–15% punch (12% when the profile has no usable estimate), and profile contrast/saturation/brightness drive FFmpeg color grading.
 - FFmpeg removes detected internal pauses longer than roughly half a second while preserving short handles. Word timestamps are shifted along with the removed pauses, then burned word-by-word into the video. The first two seconds can show the selected hook.
 - Each render provides MP4, SRT, verbatim transcript, title, caption, and hashtags as separate downloads. No music is added by default; this avoids bundling unlicensed music. Source audio is a mixed track, so this phase cannot independently lower an embedded music bed while preserving speech.
-- This phase is a one-at-a-time render path. Phase 4 will add the enforced test-clip approval and batch workflow.
+- Phase 4 builds the enforced test-clip approval and batch workflow on top of this renderer.
+
+### Phase 4 — end-to-end test-first batches
+
+- The batch screen accepts one to four 10-minute–2-hour videos, an approved Style Profile (Global Baatien is selected by default), and an auto-detected or manually selected video type.
+- It ranks candidates per source, then locks batch export behind a rendered test clip and a separate user approval. Only after approval can the remaining candidates render; status and progress are saved in SQLite.
+- Saved Style Library and My Clips history are visible in the UI. Test and batch exports each keep their MP4, SRT, transcript, title, caption, and hashtags.
+- Type detection uses transcript keywords and a few sampled frames. Podcast/Talking Head use OpenCV face-centering, Talking Head gets a stronger zoom, Tutorial moves captions to the top, and Motivational uses a gradual zoom. Vlog mode preserves scene changes and available source footage; it cannot invent or fetch additional B-roll.
 
 ## Run
 
@@ -57,6 +64,12 @@ FFmpeg/ffprobe must be installed separately and available on `PATH`. Tesseract i
 - `POST /music/upload` — accepts a user-provided licensed music bed (`MP3`, `WAV`, `M4A`, `AAC`, `OGG`, `FLAC`); no music is bundled
 - `POST /clips/render` — JSON: `source_id`, `start_seconds`, `end_seconds`, `word_timestamps`, `style_slug`, and `hook_line`; renders one clip using an approved profile
 - `GET /outputs/{render_id}/{filename}` — downloads one of the six files produced by that render
+- `POST /batches` — multipart `background` uploads (one to four videos), `style_slug`, `video_type` (`auto` or one of five types), and optional `music_upload_id`
+- `GET /batches/{batch_id}` — batch analysis, test, approval, or generation status
+- `POST /batches/{batch_id}/test` — multipart `candidate_ref` such as `0:0`; renders the single review clip
+- `POST /batches/{batch_id}/approve` — approves the current test clip
+- `POST /batches/{batch_id}/generate` — unlocks remaining candidates only after test approval
+- `GET /batches` and `GET /clips/history` — saved batch and render history
 
 ## Local data
 
@@ -67,7 +80,6 @@ FFmpeg/ffprobe must be installed separately and available on `PATH`. Tesseract i
 
 ## Not implemented yet
 
-- Phase 4: end-to-end workflow, history, and test-clip approval
 - Phase 5: download/share conveniences
 - Phase 6: live hosting
 
