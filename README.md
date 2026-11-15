@@ -56,7 +56,7 @@ python app.py
 
 Open <http://127.0.0.1:8000>. Health check: <http://127.0.0.1:8000/health>.
 
-For a public deployment, set `VCS_USERNAME` and a strong `VCS_PASSWORD` in the host's secret environment settings. All app pages and APIs require HTTP Basic Auth; `/health` remains public for deployment health checks. The app returns `503` for protected routes until a password is configured.
+The hosted demo is public and has no login. Do not upload private or sensitive videos: anyone who can reach the public service can use its upload, API, and download routes. Render's free filesystem is ephemeral, so local uploads, outputs, styles, and SQLite data can disappear after a restart or redeploy.
 
 FFmpeg/ffprobe must be installed separately and available on `PATH`. Tesseract is optional for OCR. The app still starts if FFmpeg is missing, but video analysis reports that it is required.
 
