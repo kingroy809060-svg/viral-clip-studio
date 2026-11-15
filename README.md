@@ -41,6 +41,12 @@ The style analyzer needs the actual reel video file. A social profile URL by its
 - Saved Style Library and My Clips history are visible in the UI. Test and batch exports each keep their MP4, SRT, transcript, title, caption, and hashtags.
 - Type detection uses transcript keywords and a few sampled frames. Podcast/Talking Head use OpenCV face-centering, Talking Head gets a stronger zoom, Tutorial moves captions to the top, and Motivational uses a gradual zoom. Vlog mode preserves scene changes and available source footage; it cannot invent or fetch additional B-roll.
 
+### Phase 5 — download and share
+
+- Download every clip's MP4, SRT, verbatim transcript, title, caption, and hashtags separately, or download the six deliverables together as a ZIP.
+- Download a batch ZIP containing the reviewed test clip and every successfully generated clip. The bundle refreshes as the batch completes.
+- Copy Caption + Hashtags copies the exact exported caption and hashtag text to the clipboard. Posting to Instagram/Facebook remains a manual step; this app does not request social account access or publish on your behalf.
+
 ## Run
 
 ```bash
@@ -64,6 +70,8 @@ FFmpeg/ffprobe must be installed separately and available on `PATH`. Tesseract i
 - `POST /music/upload` — accepts a user-provided licensed music bed (`MP3`, `WAV`, `M4A`, `AAC`, `OGG`, `FLAC`); no music is bundled
 - `POST /clips/render` — JSON: `source_id`, `start_seconds`, `end_seconds`, `word_timestamps`, `style_slug`, and `hook_line`; renders one clip using an approved profile
 - `GET /outputs/{render_id}/{filename}` — downloads one of the six files produced by that render
+- `GET /downloads/render/{render_id}.zip` — downloads all six files for one rendered clip
+- `GET /downloads/batch/{batch_id}.zip` — downloads the test clip and every completed batch clip with their companion files
 - `POST /batches` — multipart `background` uploads (one to four videos), `style_slug`, `video_type` (`auto` or one of five types), and optional `music_upload_id`
 - `GET /batches/{batch_id}` — batch analysis, test, approval, or generation status
 - `POST /batches/{batch_id}/test` — multipart `candidate_ref` such as `0:0`; renders the single review clip
@@ -80,7 +88,6 @@ FFmpeg/ffprobe must be installed separately and available on `PATH`. Tesseract i
 
 ## Not implemented yet
 
-- Phase 5: download/share conveniences
 - Phase 6: live hosting
 
 No paid API is used. Gemini is optional and falls back to local rule-based scoring.

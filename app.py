@@ -8,6 +8,8 @@ import shutil
 import sqlite3
 import uuid
 import copy
+import io
+import zipfile
 from contextlib import asynccontextmanager, closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,7 +17,7 @@ from pathlib import Path
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -46,7 +48,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Viral Clip Studio", version="0.4.0-phase4", lifespan=lifespan)
+app = FastAPI(title="Viral Clip Studio", version="0.5.0-phase5", lifespan=lifespan)
 
 VIDEO_TYPES = {"Podcast", "Talking Head", "Vlog", "Tutorial", "Motivational"}
 
@@ -115,7 +117,7 @@ def index() -> HTMLResponse:
 
 @app.get("/health")
 def health() -> JSONResponse:
-    return JSONResponse({"status": "ok", "phase": 4, "ffmpeg": ffmpeg_status()})
+    return JSONResponse({"status": "ok", "phase": 5, "ffmpeg": ffmpeg_status()})
 
 
 async def save_upload(file: UploadFile, role: str) -> dict[str, str | int]:
@@ -597,6 +599,75 @@ def download_rendered_file(render_id: str, filename: str) -> FileResponse:
         raise HTTPException(status_code=404, detail="Rendered file is missing.")
     media_type = "video/mp4" if path.suffix == ".mp4" else "text/plain; charset=utf-8"
     return FileResponse(path, media_type=media_type, filename=path.name)
+
+
+def _archive_render(archive: zipfile.ZipFile, render_id: str, metadata: dict[str, object], prefix: str) -> int:
+    """Add only the six known deliverables for a recorded render to a ZIP."""
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        row = conn.execute("SELECT output_dir FROM rendered_clips WHERE id = ?", (render_id,)).fetchone()
+    if not row:
+        return 0
+    output_dir = (ROOT / row[0]).resolve()
+    if not output_dir.is_relative_to(OUTPUT_DIR.resolve()):
+        return 0
+    added = 0
+    for key in ("mp4", "srt", "transcript", "title", "caption", "hashtags"):
+        filename = metadata.get(key)
+        if not isinstance(filename, str) or Path(filename).name != filename:
+            continue
+        path = (output_dir / filename).resolve()
+        if path.is_relative_to(output_dir) and path.is_file():
+            archive.write(path, f"{prefix}/{filename}")
+            added += 1
+    return added
+
+
+@app.get("/downloads/render/{render_id}.zip")
+def download_render_bundle(render_id: str) -> StreamingResponse:
+    """Download a clip MP4 and its five editable companion files together."""
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        row = conn.execute("SELECT files_json FROM rendered_clips WHERE id = ?", (render_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Rendered clip was not found.")
+    try:
+        metadata = json.loads(row[0])
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="Rendered clip metadata is invalid.") from exc
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        count = _archive_render(archive, render_id, metadata, "viral-clip")
+    if not count:
+        raise HTTPException(status_code=404, detail="Files for this clip are missing.")
+    buffer.seek(0)
+    return StreamingResponse(buffer, media_type="application/zip",
+                             headers={"Content-Disposition": f'attachment; filename="viral-clip-{render_id}.zip"'})
+
+
+@app.get("/downloads/batch/{batch_id}.zip")
+def download_batch_bundle(batch_id: str) -> StreamingResponse:
+    """Download every rendered test/final clip in a batch with companion files."""
+    batch = _load_batch(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch was not found.")
+    clips: list[tuple[str, dict[str, object]]] = []
+    test_clip = batch.get("test_clip")
+    if isinstance(test_clip, dict):
+        clips.append(("test-clip", test_clip))
+    for index, result in enumerate(batch.get("results", []), start=1):
+        clip = result.get("clip")
+        if isinstance(clip, dict):
+            clips.append((f"clip-{index:02d}", clip))
+    if not clips:
+        raise HTTPException(status_code=409, detail="No rendered clips are available in this batch yet.")
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        total = sum(_archive_render(archive, str(clip.get("id", "")), clip, label)
+                    for label, clip in clips)
+    if not total:
+        raise HTTPException(status_code=404, detail="Rendered files for this batch are missing.")
+    buffer.seek(0)
+    return StreamingResponse(buffer, media_type="application/zip",
+                             headers={"Content-Disposition": f'attachment; filename="viral-clip-batch-{batch_id}.zip"'})
 
 
 @app.post("/styles/analyze")
