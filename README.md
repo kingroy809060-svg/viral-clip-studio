@@ -24,7 +24,7 @@ The style analyzer needs the actual reel video file. A social profile URL by its
 - Whisper `base` runs locally and returns a full transcript plus word-level timestamps; language detection is automatic for Hindi, Hinglish, English, and other Whisper-supported languages.
 - 30–60 second transcript windows are scored on hook (30), emotion (30), complete idea (20), and loop potential (20). The UI shows the top non-overlapping clips, their exact Whisper text, score breakdown, and an editable full transcript.
 - If `GEMINI_API_KEY` is set in `.env`, Gemini scores candidate batches. If the key is absent, the request fails, or the quota is reached, rule-based scores are used and the app continues.
-- Phase 2 accepts source videos between 10 minutes and 2 hours. On first use, Whisper may need to download its model weights; transcription afterward runs locally.
+- Phase 2 accepts source videos between 10 minutes and 3 hours. On first use, Whisper may need to download its model weights; transcription afterward runs locally.
 
 ### Phase 3 — single approved clip render
 
@@ -36,7 +36,7 @@ The style analyzer needs the actual reel video file. A social profile URL by its
 
 ### Phase 4 — end-to-end test-first batches
 
-- The batch screen accepts one to four 10-minute–2-hour videos, an approved Style Profile (Global Baatien is selected by default), and an auto-detected or manually selected video type.
+- The batch screen accepts one to four 10-minute–3-hour videos, an approved Style Profile (Global Baatien is selected by default), and an auto-detected or manually selected video type.
 - It ranks candidates per source, then locks batch export behind a rendered test clip and a separate user approval. Only after approval can the remaining candidates render; status and progress are saved in SQLite.
 - Saved Style Library and My Clips history are visible in the UI. Test and batch exports each keep their MP4, SRT, transcript, title, caption, and hashtags.
 - Type detection uses transcript keywords and a few sampled frames. Podcast/Talking Head use OpenCV face-centering, Talking Head gets a stronger zoom, Tutorial moves captions to the top, and Motivational uses a gradual zoom. Vlog mode preserves scene changes and available source footage; it cannot invent or fetch additional B-roll.
@@ -55,6 +55,8 @@ python app.py
 ```
 
 Open <http://127.0.0.1:8000>. Health check: <http://127.0.0.1:8000/health>.
+
+For a public deployment, set `VCS_USERNAME` and a strong `VCS_PASSWORD` in the host's secret environment settings. All app pages and APIs require HTTP Basic Auth; `/health` remains public for deployment health checks. The app returns `503` for protected routes until a password is configured.
 
 FFmpeg/ffprobe must be installed separately and available on `PATH`. Tesseract is optional for OCR. The app still starts if FFmpeg is missing, but video analysis reports that it is required.
 

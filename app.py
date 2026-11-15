@@ -10,6 +10,9 @@ import uuid
 import copy
 import io
 import zipfile
+import base64
+import binascii
+import hmac
 from contextlib import asynccontextmanager, closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,7 +20,7 @@ from pathlib import Path
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -36,6 +39,8 @@ load_dotenv(ROOT / ".env")
 VIDEO_EXTENSIONS = {".mp4", ".mov"}
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024 * 1024  # 8 GiB per file
 CHUNK_SIZE = 1024 * 1024
+ACCESS_USERNAME = os.getenv("VCS_USERNAME", "roy")
+ACCESS_PASSWORD = os.getenv("VCS_PASSWORD", "")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -49,6 +54,32 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Viral Clip Studio", version="0.5.0-phase5", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def require_private_access(request, call_next):
+    """Protect the public deployment with HTTP Basic Auth; keep health public."""
+    if request.url.path == "/health":
+        return await call_next(request)
+    if not ACCESS_PASSWORD:
+        return PlainTextResponse("Service is locked until VCS_PASSWORD is configured.", status_code=503)
+    header = request.headers.get("authorization", "")
+    try:
+        scheme, token = header.split(" ", 1)
+        if scheme.lower() != "basic":
+            raise ValueError("wrong auth scheme")
+        decoded = base64.b64decode(token, validate=True).decode("utf-8")
+        username, password = decoded.split(":", 1)
+    except (ValueError, UnicodeDecodeError, binascii.Error):
+        username, password = "", ""
+    valid_user = hmac.compare_digest(username.encode("utf-8"), ACCESS_USERNAME.encode("utf-8"))
+    valid_password = hmac.compare_digest(password.encode("utf-8"), ACCESS_PASSWORD.encode("utf-8"))
+    if not (valid_user and valid_password):
+        return Response(
+            "Authentication required.", status_code=401,
+            headers={"WWW-Authenticate": 'Basic realm="Viral Clip Studio"'},
+        )
+    return await call_next(request)
 
 VIDEO_TYPES = {"Podcast", "Talking Head", "Vlog", "Tutorial", "Motivational"}
 
@@ -199,15 +230,15 @@ async def upload_videos(
 
 @app.post("/clips/find")
 async def analyze_long_video(long_video: UploadFile = File(...)) -> dict[str, object]:
-    """Transcribe a 10-minute to 2-hour source locally and return top clip candidates."""
+    """Transcribe a 10-minute to 3-hour source locally and return top clip candidates."""
     saved = await save_upload(long_video, "clip finder source")
     video_path = UPLOAD_DIR / f"{saved['id']}{Path(saved['filename']).suffix.lower()}"
     try:
         duration = await run_in_threadpool(probe_duration_seconds, video_path)
     except (FileNotFoundError, RuntimeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if duration < 600 or duration > 7200:
-        raise HTTPException(status_code=422, detail="Source video must be between 10 minutes and 2 hours.")
+    if duration < 600 or duration > 10800:
+        raise HTTPException(status_code=422, detail="Source video must be between 10 minutes and 3 hours.")
     try:
         transcript = await run_in_threadpool(transcribe, video_path, "base")
         result = find_clips(transcript)
@@ -438,8 +469,8 @@ async def create_batch(
             saved = await save_upload(file, "clip finder source")
             source_path = UPLOAD_DIR / f"{saved['id']}{Path(saved['filename']).suffix.lower()}"
             duration = await run_in_threadpool(probe_duration_seconds, source_path)
-            if duration < 600 or duration > 7200:
-                raise ValueError(f"{saved['filename']}: video must be between 10 minutes and 2 hours.")
+            if duration < 600 or duration > 10800:
+                raise ValueError(f"{saved['filename']}: video must be between 10 minutes and 3 hours.")
             transcript = await run_in_threadpool(transcribe, source_path, "base")
             picks = find_clips(transcript)
             if video_type == "auto":
